@@ -1,0 +1,85 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Full training stack - nested",
+
+  "Parameters": {
+    "Bucket": {
+      "Type": "String",
+      "Default": "rea-awstraining-deployment"
+    },
+
+    "KeyName": {
+      "Description": "Key to be used on the Bastion and NAT instances",
+      "Type": "String",
+      "Default": "nat-instances-key"
+    },
+
+    "Zone": {
+      "Description": "Zone where to create DNS requests",
+      "Type": "String",
+      "Default": "awstraining.realestate.com.au."
+    }
+  },
+
+  "Resources": {
+    "AllowSSH": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "DependsOn": "VPCStack",
+      "Properties": {
+        "GroupDescription": "Allow ssh from anywhere.",
+        "SecurityGroupIngress": [ {
+          "CidrIp": "0.0.0.0/0",
+          "IpProtocol": "tcp",
+          "FromPort": "22",
+          "ToPort": "22"
+        } ],
+
+        "VpcId": { "Fn::GetAtt": [ "VPCStack", "Outputs.VpcId" ] }
+      }
+    },
+
+    "AllowICMP": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "DependsOn": "VPCStack",
+      "Properties": {
+        "GroupDescription": "Allow icmp from anywhere.",
+        "SecurityGroupIngress": [ {
+          "CidrIp": "0.0.0.0/0",
+          "IpProtocol": "icmp",
+          "FromPort": "-1",
+          "ToPort": "-1"
+        } ],
+
+        "VpcId": { "Fn::GetAtt": [ "VPCStack", "Outputs.VpcId" ] }
+      }
+    },
+
+
+    "VPCStack": {
+      "Type": "AWS::CloudFormation::Stack",
+      "Properties": {
+        "TemplateURL": { "Fn::Join": [ "", [ "https://s3-", { "Ref": "AWS::Region" }, ".amazonaws.com/", { "Ref": "Bucket" }, "/vpc-training.json" ] ] },
+        "TimeoutInMinutes": "300",
+        "Parameters": {
+          "KeyName": { "Ref": "KeyName" }
+        }
+      }
+    },
+
+    "BastionStack": {
+      "Type": "AWS::CloudFormation::Stack",
+      "DependsOn": [ "VPCStack" ],
+      "Properties": {
+        "TemplateURL": { "Fn::Join": [ "", [ "https://s3-", { "Ref": "AWS::Region" }, ".amazonaws.com/", { "Ref": "Bucket" }, "/bastion_host.json" ] ] },
+        "TimeoutInMinutes": "300",
+        "Parameters": {
+          "VpcID": { "Fn::GetAtt": [ "VPCStack", "Outputs.VpcId" ] },
+          "SubnetID": { "Fn::GetAtt": [ "VPCStack", "Outputs.PublicSubnetA" ] },
+          "KeyName": { "Ref": "KeyName" },
+          "Zone": { "Ref": "Zone" },
+          "BucketName": { "Ref": "Bucket" }
+        }
+      }
+    }
+  }
+}

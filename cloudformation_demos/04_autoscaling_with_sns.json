@@ -1,0 +1,144 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+
+  "Description": "Training: Create an autoscaling group which notifies of events via SNS",
+
+  "Parameters": {
+    "InstanceType": {
+      "Description": "Type of the instances in the autoscale group",
+      "Type": "String",
+      "NoEcho": true
+    },
+
+    "VpcID": {
+      "Description": "VPC ID where the stack will be deployed",
+      "Type": "String",
+      "MinLength": "12",
+      "MaxLength": "12",
+      "AllowedPattern": "vpc-[a-f0-9]{8}"
+    },
+
+    "PrivateSubnets": {
+      "Description": "VPN Subnet IDs that will be attached to the autoscale group to spin new EC2 instances.",
+      "Type": "CommaDelimitedList"
+    },
+
+    "KeyName": {
+      "Description": "SSH Key to be used on the instances.",
+      "Type": "String"
+    }
+  },
+
+  "Mappings": {
+    "AWSRegion2AMI": {
+      "us-east-1": { "AMI": "ami-05355a6c" },
+      "us-west-1": { "AMI": "ami-0358ce33" },
+      "us-west-2": { "AMI": "ami-3ffed17a" },
+      "eu-west-1": { "AMI": "ami-c7c0d6b3" },
+      "sa-east-1": { "AMI": "ami-39b23d38" },
+      "ap-southeast-1": { "AMI": "ami-39b23d38" },
+      "ap-southeast-2": { "AMI": "ami-d16bfbeb" },
+      "ap-northeast-1": { "AMI": "ami-39b23d38" }
+    }
+  },
+
+  "Resources": {
+    "PermitRules": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Allowing incoming ports.",
+        "SecurityGroupIngress": [ {
+          "CidrIp": "203.17.253.249/32",
+          "IpProtocol": "tcp",
+          "FromPort": "22",
+          "ToPort": "22"
+        } ],
+        "VpcId": { "Ref": "VpcID" }
+      }
+    },
+
+    "AutoScalingGroup": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "Properties": {
+        "AvailabilityZones": { "Fn::GetAZs": "" },
+        "DesiredCapacity": "3",
+        "LaunchConfigurationName": { "Ref": "LaunchConfiguration" },
+        "MaxSize": "4",
+        "MinSize": "1",
+        "VPCZoneIdentifier": { "Ref": "PrivateSubnets" },
+        "NotificationConfiguration": {
+          "TopicARN": { "Ref": "MySNS" },
+          "NotificationTypes": [
+            "autoscaling:EC2_INSTANCE_LAUNCH",
+            "autoscaling:EC2_INSTANCE_LAUNCH_ERROR",
+            "autoscaling:EC2_INSTANCE_TERMINATE",
+            "autoscaling:EC2_INSTANCE_TERMINATE_ERROR",
+            "autoscaling:TEST_NOTIFICATION"
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "training/allbusiness",
+            "PropagateAtLaunch": true
+          }
+        ]
+      }
+    },
+
+    "AllowSNS2SQSPolicy": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "Queues": [ { "Ref": "MySQS" } ],
+        "PolicyDocument": {
+          "Version": "2008-10-17",
+          "Id": "PublicationPolicy",
+          "Statement": [ {
+            "Sid": "Allow-SNS-SendMessage",
+            "Effect": "Allow",
+            "Principal": { "AWS": "*" },
+            "Action": [ "sqs:SendMessage" ],
+            "Resource": { "Fn::GetAtt": [ "MySQS", "Arn" ] },
+            "Condition": { "ArnEquals": { "aws:SourceArn": { "Ref": "MySNS" } } }
+          } ]
+        }
+      }
+    },
+
+    "LaunchConfiguration": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "ImageId": { "Fn::FindInMap": [ "AWSRegion2AMI", { "Ref": "AWS::Region" }, "AMI" ] },
+        "InstanceType": { "Ref": "InstanceType" },
+        "KeyName": { "Ref": "KeyName" },
+        "SecurityGroups": [ { "Ref": "PermitRules" } ]
+      }
+    },
+
+    "MySNS": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": "Example autoscaling notification topic",
+        "TopicName": "reatraining-sns",
+        "Subscription": [
+          {
+            "Endpoint": "karel.malbroukou@rea-group.com",
+            "Protocol": "email"
+          },
+          {
+            "Endpoint": { "Fn::GetAtt": [ "MySQS", "Arn" ] },
+            "Protocol": "sqs"
+          }
+        ]
+      }
+    },
+
+    "MySQS": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "MessageRetentionPeriod": 60,
+        "QueueName": "reatraining-sqs"
+      }
+    }
+  }
+}

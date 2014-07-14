@@ -1,0 +1,199 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description": "Simple EC2 instance with output",
+
+  "Parameters": {
+    "KeyName": {
+      "Description": "SSH Key to use on the instance.",
+      "Type": "String",
+      "Default": "nat-instances-key"
+    },
+
+    "BucketName": {
+      "Description": "Bucket containing the package to install.",
+      "Type": "String",
+      "Default": "rea-awstraining-deployment"
+    }
+  },
+
+  "Mappings": {
+    "AWSRegion2AMI": {
+      "us-east-1": { "AMI": "ami-05355a6c" },
+      "us-west-1": { "AMI": "ami-0358ce33" },
+      "us-west-2": { "AMI": "ami-3ffed17a" },
+      "eu-west-1": { "AMI": "ami-c7c0d6b3" },
+      "sa-east-1": { "AMI": "ami-39b23d38" },
+      "ap-southeast-1": { "AMI": "ami-39b23d38" },
+      "ap-southeast-2": { "AMI": "ami-d16bfbeb" },
+      "ap-northeast-1": { "AMI": "ami-39b23d38" }
+    }
+  },
+
+  "Resources": {
+    "PermitRules": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Allowing incoming ports.",
+        "SecurityGroupIngress": [ {
+          "CidrIp": "203.17.253.249/32",
+          "IpProtocol": "tcp",
+          "FromPort": "22",
+          "ToPort": "22"
+        } ]
+      }
+    },
+
+    "CfnUser": {
+      "Type": "AWS::IAM::User",
+      "Properties": {
+        "Path": "/application/",
+        "Policies": [{
+          "PolicyName": "root",
+          "PolicyDocument": { "Statement": [{
+            "Effect": "Allow",
+            "Action": [
+              "cloudformation:DescribeStackResource"
+            ],
+            "Resource": "*"
+          },
+          {
+            "Effect": "Allow",
+            "Action": [
+              "s3:GetObject"
+            ],
+            "Resource": { "Fn::Join": [ "", [ "arn:aws:s3:::", { "Ref": "BucketName" }, "/training/*" ] ] }
+          }]}
+        }]
+      }
+    },
+
+    "CfnKeys": {
+      "Type": "AWS::IAM::AccessKey",
+      "Properties": {
+        "UserName": { "Ref": "CfnUser" }
+      }
+    },
+
+    "TrainingInstance": {
+      "Type": "AWS::EC2::Instance",
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "config": {
+            "files": {
+              "/etc/cfn/cfn-hup.conf": {
+                "content": { "Fn::Join": [ "", [
+                  "[main]\n",
+                  "stack=", { "Ref": "AWS::StackName" }, "\n",
+                  "credential-file=/etc/cfn/cfn-credentials\n",
+                  "interval=1\n",
+                  "region=", { "Ref": "AWS::Region" }, "\n"
+                ]]},
+                "mode"    : "000400",
+                "owner"   : "root",
+                "group"   : "root"
+              },
+
+              "/etc/cfn/cfn-credentials": {
+                "content": { "Fn::Join" : ["", [
+                  "AWSAccessKeyId=", { "Ref": "CfnKeys" }, "\n",
+                  "AWSSecretKey=", {"Fn::GetAtt": ["CfnKeys", "SecretAccessKey"]}, "\n"
+                ]]},
+                "mode"    : "000400",
+                "owner"   : "root",
+                "group"   : "root"
+              },
+
+              "/etc/cfn/hooks.d/cfn-auto-reloader.conf": {
+                "content": { "Fn::Join": ["", [
+                  "[cfn-auto-reloader-hook]\n",
+                  "triggers=post.update\n",
+                  "path=Resources.TrainingInstance.Metadata.AWS::CloudFormation::Init\n",
+                  "action=/opt/aws/bin/cfn-init -s ", { "Ref": "AWS::StackName" }, " -r TrainingInstance ",
+                  " --region ", { "Ref": "AWS::Region" }, "\n",
+                  "runas=root\n"
+                ]]}
+              }
+            },
+
+            "services": {
+              "sysvinit": {
+                "cfn-hup": {
+                  "ensureRunning": "true"
+                }
+              }
+            },
+
+            "sources": {
+              "/tmp/training": { "Fn::Join": [ "", [ "https://", { "Ref" : "BucketName" }, ".s3.amazonaws.com/training/package.tgz" ] ] }
+            }
+          }
+        },
+
+        "AWS::CloudFormation::Authentication": {
+          "S3AccessCreds": {
+            "type": "S3",
+            "accessKeyId": { "Ref": "CfnKeys" },
+            "secretKey": { "Fn::GetAtt": [ "CfnKeys", "SecretAccessKey" ] },
+            "buckets": [ { "Ref": "BucketName" } ]
+          }
+        }
+      },
+
+      "Properties": {
+        "ImageId": { "Fn::FindInMap": [ "AWSRegion2AMI", { "Ref": "AWS::Region" }, "AMI" ] },
+        "InstanceType": "t1.micro",
+        "KeyName": { "Ref": "KeyName" },
+        "SecurityGroups": [ { "Ref": "PermitRules" } ],
+        "UserData": { "Fn::Base64": { "Fn::Join": [ "", [
+            "#!/bin/bash\n",
+            "#########################################\n",
+            "#########################################\n",
+            "#########################################\n",
+            "## CloudFormation Instances Bootstrap\n",
+            "#########################################\n",
+
+            "# Helper function\n",
+            "function error_exit\n",
+            "{\n",
+            "  /opt/aws/bin/cfn-signal -e 1 -r \"$1\" '", { "Ref": "WaitHandle" }, "'\n",
+            "  exit 1\n",
+            "}\n",
+
+            "yum -y update aws-cfn-bootstrap || error_exit \"ERROR: Could not update aws-cfn-bootstrap.\"\n",
+
+            "/opt/aws/bin/cfn-init -v -s ", { "Ref": "AWS::StackName" }, " -r TrainingInstance",
+            "  --region ", { "Ref": "AWS::Region" }, " || error_exit 'Failed to run cfn-init'\n",
+
+            "/opt/aws/bin/cfn-signal -e 0 -r 'Stack Complete.' '", { "Ref": "WaitHandle" }, "'\n"
+            ]
+          ] }
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "training/ec2_example"
+          }
+        ]
+      }
+    },
+
+    "WaitHandle": {
+      "Type": "AWS::CloudFormation::WaitConditionHandle"
+    },
+
+    "WaitCondition": {
+      "Type": "AWS::CloudFormation::WaitCondition",
+      "DependsOn": "TrainingInstance",
+      "Properties": {
+        "Handle": { "Ref": "WaitHandle" },
+        "Timeout": "300"
+      }
+    }
+  },
+
+  "Outputs": {
+    "PublicIP": {
+      "Value": { "Fn::GetAtt": [ "TrainingInstance", "PublicIp" ] }
+    }
+  }
+}

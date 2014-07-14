@@ -1,0 +1,225 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description": "Bastion Host",
+
+  "Parameters": {
+    "BucketName": {
+      "Type": "String",
+      "Default": "rea-awstraining-deployment"
+    },
+
+    "Zone": {
+      "Type": "String",
+      "Default": "awstraining.realestate.com.au."
+    },
+
+    "KeyName": {
+      "Description": "SSH Key to be installed on the bastion host.",
+      "Type": "String",
+      "Default": "nat-instances-key"
+    },
+
+    "VpcID": {
+      "Description": "VPC id in which to create the bastion host.",
+      "Type": "String",
+      "Default": "vpc-8ad3dbe8"
+    },
+
+    "SubnetID": {
+      "Description": "Subnet in which the bastion host will be started.",
+      "Type": "String",
+      "Default": "subnet-4a8da63e"
+    }
+  },
+
+  "Mappings": {
+    "AWSRegion2AMI": {
+      "us-east-1": { "AMI": "ami-05355a6c" },
+      "us-west-1": { "AMI": "ami-0358ce33" },
+      "us-west-2": { "AMI": "ami-3ffed17a" },
+      "eu-west-1": { "AMI": "ami-c7c0d6b3" },
+      "sa-east-1": { "AMI": "ami-39b23d38" },
+      "ap-southeast-1": { "AMI": "ami-39b23d38" },
+      "ap-southeast-2": { "AMI": "ami-d16bfbeb" },
+      "ap-northeast-1": { "AMI": "ami-39b23d38" }
+    }
+  },
+
+  "Resources": {
+    "PermitRules": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Allowing SSH port from office.",
+        "SecurityGroupIngress": [ {
+          "CidrIp": "203.17.253.249/32",
+          "IpProtocol": "tcp",
+          "FromPort": "22",
+          "ToPort": "22"
+        } ],
+        "VpcId": { "Ref": "VpcID" }
+      }
+    },
+
+    "BastionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "Path": "/application/",
+        "AssumeRolePolicyDocument": {
+          "Statement": [ {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [ "ec2.amazonaws.com" ]
+            },
+            "Action": [ "sts:AssumeRole" ]
+          } ]
+        },
+        "Policies": [ {
+          "PolicyName": "BastionHostS3Auth",
+          "PolicyDocument": {
+            "Statement": [ {
+              "Effect": "Allow",
+              "Action": "cloudformation:DescribeStackResource",
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource":  {
+                "Fn::Join": [ "", [ "arn:aws:s3:::" , { "Ref" : "BucketName" }, "/*" ] ]
+              }
+            } ]
+          }
+        } ]
+      }
+    },
+
+    "BastionProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Path": "/application/",
+        "Roles": [ { "Ref": "BastionRole" } ]
+      }
+    },
+
+    "BastionHost": {
+      "Type": "AWS::EC2::Instance",
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "configSets": {
+            "default": [ "prepare_env", "setup" ]
+          },
+
+          "prepare_env": {
+            "packages": {
+              "yum":  { "telnet": [], "tcpdump": [] }
+            },
+
+            "sources": {
+              "/tmp/.keys": { "Fn::Join": [ "", [ "https://s3-", { "Ref": "AWS::Region" }, ".amazonaws.com/", { "Ref": "BucketName" }, "/setup_keys.tar.gz" ] ] }
+            }
+          },
+
+          "setup": {
+            "commands": {
+              "create_users": {
+                "command": "cd /tmp/.keys && ./setup_home.sh"
+              }
+            }
+          }
+        },
+
+        "AWS::CloudFormation::Authentication": {
+          "S3AccessCreds": {
+            "type": "S3",
+            "roleName": { "Ref": "BastionRole" },
+            "buckets": [ { "Ref": "BucketName" } ]
+          }
+        }
+      },
+
+      "Properties": {
+        "ImageId": { "Fn::FindInMap": [ "AWSRegion2AMI", { "Ref": "AWS::Region" }, "AMI" ] },
+        "InstanceType": "t1.micro",
+        "IamInstanceProfile": { "Ref": "BastionProfile" },
+        "KeyName": { "Ref": "KeyName" },
+        "SecurityGroupIds": [ { "Ref": "PermitRules" } ],
+        "SubnetId": { "Ref": "SubnetID" },
+        "UserData": { "Fn::Base64": { "Fn::Join": [ "", [
+            "#!/bin/bash\n",
+            "#########################################\n",
+            "#########################################\n",
+            "#########################################\n",
+            "## CloudFormation Instances Bootstrap\n",
+            "#########################################\n",
+
+            "# Helper function\n",
+            "function error_exit\n",
+            "{\n",
+            "  /opt/aws/bin/cfn-signal -e 1 -r \"$1\" '", { "Ref": "WaitHandle" }, "'\n",
+            "  exit 1\n",
+            "}\n",
+
+            "yum -y update aws-cfn-bootstrap || error_exit \"ERROR: Could not update aws-cfn-bootstrap.\"\n",
+
+            "/opt/aws/bin/cfn-init -v -s ", { "Ref": "AWS::StackName" }, " -r BastionHost",
+            "  --region ", { "Ref": "AWS::Region" }, " || error_exit 'Failed to run cfn-init'\n",
+
+            "/opt/aws/bin/cfn-signal -e 0 -r 'Stack Complete.' '", { "Ref": "WaitHandle" }, "'\n"
+            ]
+          ] }
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "training/bastion"
+          }
+        ]
+      }
+    },
+
+    "BastionIP": {
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "InstanceId": { "Ref": "BastionHost" },
+        "Domain": "vpc"
+      }
+    },
+
+    "WaitHandle": {
+      "Type": "AWS::CloudFormation::WaitConditionHandle"
+    },
+
+    "WaitCondition": {
+      "Type": "AWS::CloudFormation::WaitCondition",
+      "DependsOn": "BastionHost",
+      "Properties": {
+        "Handle": { "Ref": "WaitHandle" },
+        "Timeout": "300"
+      }
+    },
+
+    "BastionDNS": {
+      "Type": "AWS::Route53::RecordSet",
+      "DependsOn": "BastionHost",
+      "Properties": {
+        "HostedZoneName": { "Ref": "Zone" },
+        "Name": { "Fn::Join": [ ".", [ "bastion", { "Ref": "Zone" } ] ] },
+        "TTL": "60",
+        "Type": "A",
+        "ResourceRecords": [
+          { "Ref": "BastionIP" }
+        ]
+      }
+    }
+  },
+
+  "Outputs": {
+    "BastionDNS": {
+      "Value": { "Ref": "BastionDNS" }
+    },
+ 
+    "PrivateIP": {
+      "Value": { "Ref": "BastionIP" }
+    }
+  }
+}

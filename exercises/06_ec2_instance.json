@@ -1,0 +1,236 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description": "Template for training exercises",
+
+  "Parameters": {
+    "VpcID": {
+      "Description": "VPC id in which to create the bastion host.",
+      "Type": "String"
+    },
+
+    "MinSize": {
+      "Description": "MinSize for the autoscale group",
+      "Type": "Number",
+      "Default": "1"
+    },
+
+    "MaxSize": {
+      "Description": "MaxSize for the autoscale group",
+      "Type": "Number",
+      "Default": "2"
+    },
+
+    "PrivateSubnets": {
+      "Description": "Subnets used in the autoscale group.",
+      "Type": "CommaDelimitedList"
+    },
+
+    "PublicSubnets": {
+      "Description": "Subnets used in the ELB.",
+      "Type": "CommaDelimitedList"
+    },
+
+    "KeyName": {
+      "Description": "SSH Key to be used on the instance.",
+      "Type": "String"
+    },
+
+    "BastionSG": {
+      "Description": "SecurityGroup ID used on the Bastion host",
+      "Type": "String"
+    },
+
+    "Zone": {
+      "Description": "Zone where to create the Route53 record",
+      "Type": "String",
+      "Default": "awstraining.realestate.com.au."
+    }
+  },
+
+  "Mappings": {
+    "AWSRegion2AMI": {
+      "us-east-1": { "AMI": "ami-05355a6c" },
+      "us-west-1": { "AMI": "ami-0358ce33" },
+      "us-west-2": { "AMI": "ami-3ffed17a" },
+      "eu-west-1": { "AMI": "ami-c7c0d6b3" },
+      "sa-east-1": { "AMI": "ami-39b23d38" },
+      "ap-southeast-1": { "AMI": "ami-39b23d38" },
+      "ap-southeast-2": { "AMI": "ami-d16bfbeb" },
+      "ap-northeast-1": { "AMI": "ami-39b23d38" }
+    }
+  },
+
+  "Resources": {
+    "ELBPermit": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Allowing incoming ports on ELB.",
+        "SecurityGroupIngress": [ {
+          "CidrIp": "0.0.0.0/0",
+          "IpProtocol": "tcp",
+          "FromPort": "80",
+          "ToPort": "80"
+        },
+        {
+          "CidrIp": "0.0.0.0/0",
+          "IpProtocol": "icmp",
+          "FromPort": "-1",
+          "ToPort": "-1"
+        } ],
+
+        "VpcId": { "Ref": "VpcID" }
+      }
+    },
+
+    "PermitRules": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "DependsOn": "ELBPermit",
+      "Properties": {
+        "GroupDescription": "Allowing incoming ports.",
+        "SecurityGroupIngress": [ {
+          "SourceSecurityGroupId": { "Ref": "BastionSG" },
+          "IpProtocol": "tcp",
+          "FromPort": "22",
+          "ToPort": "22"
+        },
+        {
+          "SourceSecurityGroupId": { "Ref": "ELBPermit" },
+          "IpProtocol": "tcp",
+          "FromPort": "80",
+          "ToPort": "80"
+        },
+        {
+          "CidrIp": "0.0.0.0/0",
+          "IpProtocol": "icmp",
+          "FromPort": "-1",
+          "ToPort": "-1"
+        } ],
+
+        "VpcId": { "Ref": "VpcID" }
+      }
+    },
+
+    "LoadBalancer": {
+      "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties": {
+        "Subnets": { "Ref": "PublicSubnets" },
+        "Scheme": "internet-facing",
+        "SecurityGroups": [ { "Ref": "ELBPermit" } ],
+        "Listeners": [ {
+            "InstancePort": "80",
+            "LoadBalancerPort": "80",
+            "Protocol": "HTTP"
+        } ],
+        "HealthCheck": {
+          "HealthyThreshold": "2",
+          "Interval": "60",
+          "Timeout": "4",
+          "Target": "HTTP:80/",
+          "UnhealthyThreshold": "2"
+        }
+      }
+    },
+
+    "LaunchConf": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "config": {
+            "packages": {
+              "yum": { "nginx": [] }
+            },
+
+            "services": {
+              "sysvinit": {
+                "nginx": {
+                  "enabled": "true",
+                  "ensureRunning": "true"
+                }
+              }
+            }
+          }
+        }
+      },
+
+      "Properties": {
+        "ImageId": { "Fn::FindInMap": [ "AWSRegion2AMI", { "Ref": "AWS::Region" }, "AMI" ] },
+        "InstanceType": "t1.micro",
+        "KeyName": { "Ref": "KeyName" },
+        "SecurityGroups": [ { "Ref": "PermitRules" } ],
+        "UserData": { "Fn::Base64": { "Fn::Join": [ "", [
+            "#!/bin/bash\n",
+            "#########################################\n",
+            "#########################################\n",
+            "#########################################\n",
+            "## CloudFormation Instances Bootstrap\n",
+            "#########################################\n",
+
+            "# Helper function\n",
+            "function error_exit\n",
+            "{\n",
+            "  /opt/aws/bin/cfn-signal -e 1 -r \"$1\" '", { "Ref": "WaitHandle" }, "'\n",
+            "  exit 1\n",
+            "}\n",
+
+            "yum -y update aws-cfn-bootstrap || error_exit \"ERROR: Could not update aws-cfn-bootstrap.\"\n",
+
+            "/opt/aws/bin/cfn-init -v -s ", { "Ref": "AWS::StackName" }, " -r LaunchConf",
+            "  --region ", { "Ref": "AWS::Region" }, " || error_exit 'Failed to run cfn-init'\n",
+
+            "/opt/aws/bin/cfn-signal -e 0 -r 'Stack Complete.' '", { "Ref": "WaitHandle" }, "'\n"
+            ]
+          ] }
+        }
+      }
+    },
+
+    "ASGroup": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "Properties": {
+        "AvailabilityZones": { "Fn::GetAZs": "" },
+        "VPCZoneIdentifier": { "Ref" : "PrivateSubnets" },
+        "HealthCheckGracePeriod": 300,
+        "HealthCheckType": "ELB",
+        "LaunchConfigurationName": { "Ref" : "LaunchConf" },
+        "LoadBalancerNames" : [ { "Ref" : "LoadBalancer" } ],
+        "MinSize": { "Ref": "MinSize" },
+        "MaxSize": { "Ref": "MaxSize" },
+        "DesiredCapacity": { "Ref": "MinSize" },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "training/demo_instance",
+            "PropagateAtLaunch": true
+          }
+        ]
+      }
+    },
+
+    "WaitHandle": {
+      "Type": "AWS::CloudFormation::WaitConditionHandle"
+    },
+
+    "WaitCondition": {
+      "Type": "AWS::CloudFormation::WaitCondition",
+      "DependsOn": "LaunchConf",
+      "Properties": {
+        "Count": { "Ref": "MinSize" },
+        "Handle": { "Ref": "WaitHandle" },
+        "Timeout": "300"
+      }
+    },
+
+    "ELBDNS": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "HostedZoneName": { "Ref": "Zone" },
+        "Type": "A",
+        "Name": { "Fn::Join": [ "." , [ "web", { "Ref": "Zone" } ] ] },
+        "AliasTarget": {
+          "HostedZoneId": { "Fn::GetAtt" : [ "LoadBalancer", "CanonicalHostedZoneNameID" ] },
+          "DNSName": { "Fn::GetAtt": [ "LoadBalancer", "DNSName" ] }
+        }
+      }
+    }
+  }
+}

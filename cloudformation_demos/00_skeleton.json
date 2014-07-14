@@ -1,0 +1,20 @@
+{
+  "AWSTemplateFormatVersion" : "<version>",
+  "Description": "<desc>",
+
+  "Parameters": {
+    <set of parameters>
+  },
+
+  "Mappings": {
+    <set of mappings>
+  },
+
+  "Resources: {
+    <set of resources>
+  },
+
+  "Outputs": {
+    <set of outputs>
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description": "Simple EC2 instance with output",
+
+  "Resources": {
+    "PermitRules": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Allowing incoming ports.",
+        "SecurityGroupIngress": [ {
+          "CidrIp": "203.17.253.249/32",
+          "IpProtocol": "tcp",
+          "FromPort": "22",
+          "ToPort": "22"
+        } ]
+      }
+    },
+
+    "TrainingInstance": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": "ami-8948d5b3",
+        "InstanceType": "m1.small",
+        "KeyName": "rea-ec2",
+        "SecurityGroups": [ { "Ref": "PermitRules" } ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "training/ec2_example"
+          }
+        ]
+      }
+    }
+  },
+
+  "Outputs": {
+    "PrivateIP": {
+      "Value": { "Fn::GetAtt": [ "TrainingInstance", "PrivateIp" ] }
+    }
+  }
+}

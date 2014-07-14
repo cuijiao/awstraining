@@ -1,0 +1,21 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Bucket used for deployment of the training stack",
+
+  "Parameters": {
+    "Name": {
+      "Description": "Bucket used to store template used for VPC creation.",
+      "Type": "String",
+      "Default": "rea-awstraining-deployment"
+    }
+  },
+
+  "Resources": {
+    "DeployBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": { "Ref": "Name" }
+      }
+    }
+  }
+}
